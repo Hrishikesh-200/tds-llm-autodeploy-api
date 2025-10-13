@@ -1,40 +1,22 @@
-<<<<<<< HEAD
-# Use an official Python runtime as a parent image
+# Read the doc: https://huggingface.co/docs/hub/spaces-sdks-docker# you will also find guides on how best to write your Dockerfile
 FROM python:3.10
 
-# Set the working directory in the container
+# Create a non-root user for security
+RUN useradd -m -u 1000 user
+USER user
+
+# Set environment variables for the user's path
+ENV PATH="/home/user/.local/bin:$PATH"
+
+# Set the working directory
 WORKDIR /app
 
-# Copy dependency files and install them
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy and install Python dependencies
+COPY --chown=user ./requirements.txt requirements.txt
+RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
-# Copy the rest of the application code
-COPY . /app
+# Copy the rest of the application files
+COPY --chown=user . /app
 
-# The port must be 7860 for standard Hugging Face Space deployments
-EXPOSE 7860
-
-# Command to run the FastAPI application
-# main:app refers to the 'app' object in 'main.py'
-=======
-# Use an official Python runtime as a parent image
-FROM python:3.10
-
-# Set the working directory in the container
-WORKDIR /app
-
-# Copy dependency files and install them
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the rest of the application code
-COPY . /app
-
-# The port must be 7860 for standard Hugging Face Space deployments
-EXPOSE 7860
-
-# Command to run the FastAPI application
-# main:app refers to the 'app' object in 'main.py'
->>>>>>> 52580779a2ed91d4be40cf59f3c3405935a228fc
+# Command to run the application using Uvicorn on port 7860
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
