@@ -1,18 +1,2 @@
-<<<<<<< HEAD
 fastapi
 uvicorn[standard]
-pydantic
-requests
-# Add the LLM libraries you need:
-# google-genai
-# transformers
-=======
-fastapi
-uvicorn[standard]
-pydantic
-requests
-# Add the LLM libraries you need:
-# google-genai
-# transformers
->>>>>>> 52580779a2ed91d4be40cf59f3c3405935a228fc
-# gitpython (if using a Python library for git operations instead of subprocess)
