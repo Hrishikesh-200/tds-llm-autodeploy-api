@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+pydantic
+requests
+# Add the LLM libraries you need:
+# google-genai
+# transformers
+# gitpython (if using a Python library for git operations instead of subprocess)
