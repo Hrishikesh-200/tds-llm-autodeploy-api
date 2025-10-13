@@ -1,22 +1,24 @@
 import os
-import json
-import time
-import requests # Needed for GitHub API call and Evaluation ping
+import shutil
 import subprocess
+import json
+import requests
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from app_generator import generate_application # Assuming this is your LLM core
+from typing import List, Optional
+import os.path
 
-# --- 1. CONFIGURATION (MUST BE UPDATED) ---
-# IMPORTANT: This secret MUST MATCH the value you submit in the Google Form.
-STUDENT_SECRET = "Hris@tds_proj1_term3" # REPLACE with your actual secret
-# GITHUB_PAT is read from the Hugging Face Space Secrets
-GITHUB_PAT = os.environ.get("GITHUB_PAT") 
-GITHUB_USERNAME = "Hrishikesh-200" # CONFIRM: Your actual GitHub username
+# --- Configuration & Secrets ---
+# Use os.environ.get to safely retrieve secrets from Hugging Face environment variables
+STUDENT_SECRET = os.environ.get("STUDENT_SECRET", "Hris@tds_proj1_term3")
+GITHUB_PAT = os.environ.get("GITHUB_PAT")
+GITHUB_USERNAME = "Hrishikesh-200" # Your GitHub username
+
+# --- End Configuration ---
 
 app = FastAPI()
 
-# Pydantic models (as previously defined)
+# Pydantic model for the incoming JSON request
 class TaskRequest(BaseModel):
     email: str
     secret: str
@@ -24,193 +26,156 @@ class TaskRequest(BaseModel):
     round: int
     nonce: str
     brief: str
-    checks: list[str]
+    checks: List[str]
     evaluation_url: str
-    attachments: list 
+    attachments: List[dict] = []
 
-class EvaluationPing(BaseModel):
-    email: str
-    task: str
-    round: int
-    nonce: str
-    repo_url: str
-    commit_sha: str
-    pages_url: str
+# --- Helper Functions ---
 
-# --- 2. GITHUB & DEPLOYMENT HELPERS ---
-
-def run_git_command(command, repo_path):
-    """Executes a git command in the context of the repository."""
-    result = subprocess.run(
-        command,
-        cwd=repo_path,
-        capture_output=True,
-        text=True,
-        shell=True,
-        env={"GIT_TERMINAL_PROMPT": "0"}
-    )
-    if result.returncode != 0:
-        print(f"Error running command: {command}")
-        print(f"STDOUT: {result.stdout}")
-        print(f"STDERR: {result.stderr}")
-        raise RuntimeError(f"Git command failed: {result.stderr}")
-    return result.stdout.strip()
-
-def create_github_repo(repo_name, username, pat):
-    """Creates a new public repository on GitHub via the REST API."""
-    api_url = f"https://api.github.com/user/repos"
-    headers = {
-        "Authorization": f"token {pat}",
-        "Accept": "application/vnd.github.v3+json",
-    }
-    data = {
-        "name": repo_name,
-        "private": False,
-        "auto_init": False
-    }
-    response = requests.post(api_url, headers=headers, json=data)
-    
-    if response.status_code == 201:
-        print(f"Successfully created remote repo: {repo_name}")
-        return True
-    elif response.status_code == 422 and "already exists" in response.text:
-        print(f"Remote repo {repo_name} already exists (Continuing).")
-        return True
+def cleanup_repo(repo_path: str):
+    """Uses Python's shutil module for safe, cross-platform directory removal (rm -rf)."""
+    if os.path.exists(repo_path):
+        print(f"Cleaning up directory: {repo_path}")
+        try:
+            # This works on Windows, Linux (HF), and macOS.
+            shutil.rmtree(repo_path) 
+        except Exception as e:
+            # Log a warning but don't crash the main API process
+            print(f"WARNING: Could not remove directory {repo_path}: {e}")
     else:
-        print(f"Failed to create repo. Status: {response.status_code}, Response: {response.text}")
-        raise RuntimeError("GitHub repo creation failed.")
+        print(f"Cleanup skipped: Directory not found: {repo_path}")
 
-# --- 3. STATUS ENDPOINT (Optional, for easy browser check) ---
+def generate_content(brief: str) -> str:
+    # --- TODO: IMPLEMENT LLM CALL ---
+    print(f"Calling LLM to generate code for brief: {brief}")
+    
+    # Placeholder response to allow API to run
+    if "HTML" in brief.upper():
+        return f"<html><body><h1>API Test Successful for task: {brief}</h1></body></html>"
+    return f"Response to brief: {brief}"
+    # --- END TODO ---
 
-@app.get("/")
-def read_root():
-    """A simple endpoint to confirm the API is running."""
-    return {"status": "ok", "message": "Student LLM Deployment API is operational. Send POST to /api-endpoint."}
+def create_github_repo(request: TaskRequest, file_content: str) -> dict:
+    
+    if not GITHUB_PAT:
+        raise ValueError("GITHUB_PAT secret is missing or invalid.")
 
-# --- 4. MAIN API ENDPOINT (The required /api-endpoint) ---
+    repo_name = request.task
+    repo_path = os.path.join(os.getcwd(), f"{repo_name}_local_repo") 
+    
+    # 1. Cleanup old repo directory if it exists (Fixes local compatibility)
+    cleanup_repo(repo_path)
+    
+    try:
+        # --- TODO: IMPLEMENT FULL GITHUB FLOW ---
+
+        # 1. Create Repository (via GitHub API)
+        # e.g., using 'requests' to hit the GitHub /user/repos endpoint
+        print(f"Attempting to create GitHub repo: {repo_name}")
+        
+        # 2. Clone the new repository (Using Hrishikesh-200)
+        # NOTE: This line requires the repo to be created first via API/CLI
+        subprocess.run(["git", "clone", f"https://github.com/{GITHUB_USERNAME}/{repo_name}.git", repo_path], check=True)
+        
+        # 3. Create Files (LICENSE, README.md, index.html from file_content)
+        # Using os.makedirs with exist_ok=True is cross-platform safe
+        os.makedirs(repo_path, exist_ok=True) 
+        
+        # Example: Simple file creation
+        with open(os.path.join(repo_path, "index.html"), "w") as f:
+            f.write(file_content)
+            
+        # 4. Commit and Push
+        # Use HTTPS URL with PAT for authentication
+        # remote_url = f"https://oauth2:{GITHUB_PAT}@github.com/{GITHUB_USERNAME}/{repo_name}.git"
+        # subprocess.run(["git", "remote", "set-url", "origin", remote_url], cwd=repo_path, check=True)
+        # subprocess.run(["git", "push", "origin", "main", "-f"], cwd=repo_path, check=True)
+        
+        # Get actual commit SHA for the evaluation POST
+        commit_sha_result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True, check=True)
+        commit_sha = commit_sha_result.stdout.strip()
+
+        # 5. Enable GitHub Pages (via GitHub API or by pushing to 'gh-pages' branch)
+        
+        # 6. Construct final URLs (Using Hrishikesh-200)
+        repo_url = f"https://github.com/{GITHUB_USERNAME}/{repo_name}" 
+        pages_url = f"https://{GITHUB_USERNAME}.github.io/{repo_name}/" 
+
+        # --- END TODO ---
+
+        return {
+            "repo_url": repo_url, 
+            "commit_sha": commit_sha, 
+            "pages_url": pages_url
+        }
+        
+    except subprocess.CalledProcessError as e:
+        error_detail = f"Git command failed. STDOUT: {e.stdout.decode()} STDERR: {e.stderr.decode()}"
+        print(f"CRITICAL: {error_detail}")
+        # Ensure cleanup even on Git failure
+        cleanup_repo(repo_path)
+        raise ValueError(error_detail)
+    except Exception as e:
+        # Ensure cleanup on other failures
+        cleanup_repo(repo_path)
+        raise ValueError(f"An internal error occurred during GitHub operations. Error: {str(e)}")
+    
+    finally:
+        # 5. Final cleanup of the local working directory (Always runs)
+        # This is where the local compatibility fix truly shines.
+        cleanup_repo(repo_path)
+
+
+# --- Main API Endpoint ---
 
 @app.post("/api-endpoint")
 def handle_task_request(request: TaskRequest):
-    # 1. Check if the secret matches
-    if request.secret != STUDENT_SECRET:
-        raise HTTPException(status_code=403, detail="Secret verification failed.")
-
-    # 2. Immediately send HTTP 200 response
     print(f"Request accepted for task: {request.task}, round: {request.round}")
+
+    # 1. Secret/Authentication Check
+    if request.secret != STUDENT_SECRET:
+        raise HTTPException(status_code=403, detail="Invalid student secret.")
     
-    # --- ASYNCHRONOUS BACKGROUND WORK (The core Build/Revise logic) ---
+    # 2. Signature Verification (Required by Project)
+    # ### TODO: IMPLEMENT SIGNATURE VERIFICATION HERE ###
+    # If signature verification fails, raise HTTPException(status_code=403, detail="Invalid signature.")
     
-    # Check for PAT before proceeding with Git/GitHub operations
-    if not GITHUB_PAT:
-         print("CRITICAL: GITHUB_PAT secret is missing or invalid.")
-         # You still return 200, but log the internal failure
-         return {"status": "accepted", "message": "Processing failed: Missing GITHUB_PAT."}
-        
     try:
-        # Define the new repo name
-        repo_name = request.task 
-        repo_path = os.path.join("/tmp", repo_name)
-        
-        # --- BUILD LOGIC (Round 1) ---
-        if request.round == 1:
-            
-            # A. Prepare Local Directory
-            if os.path.exists(repo_path):
-                 run_git_command(f"rm -rf {repo_path}", "/tmp")
-            os.makedirs(repo_path, exist_ok=True)
-            
-            # B. CREATE REMOTE REPO VIA API (CRITICAL NEW STEP)
-            create_github_repo(repo_name, GITHUB_USERNAME, GITHUB_PAT)
-            
-            # C. LLM Generate App & Files
-            html_content, readme_content, license_content = generate_application(request.brief, request.checks, request.attachments)
-            
-            # D. Create Local Files
-            with open(os.path.join(repo_path, "index.html"), "w") as f:
-                f.write(html_content)
-            with open(os.path.join(repo_path, "README.md"), "w") as f:
-                f.write(readme_content)
-            with open(os.path.join(repo_path, "LICENSE"), "w") as f:
-                f.write(license_content)
-                
-            # E. Git Setup, Commit, and Push
-            github_url = f"https://{GITHUB_USERNAME}:{GITHUB_PAT}@github.com/{GITHUB_USERNAME}/{repo_name}.git"
-            
-            run_git_command(f"git init", repo_path)
-            run_git_command(f"git remote add origin {github_url}", repo_path)
-            run_git_command(f"git add .", repo_path)
-            run_git_command(f'git commit -m "Initial commit for task {request.task}"', repo_path)
-            
-            # F. Push (Deploys to GitHub Pages via default settings/Action)
-            run_git_command(f"git push -u origin main", repo_path)
-            
-            # G. Get Commit SHA and URLs
-            commit_sha = run_git_command("git rev-parse HEAD", repo_path)
-            repo_url = f"https://github.com/{GITHUB_USERNAME}/{repo_name}"
-            pages_url = f"https://{GITHUB_USERNAME}.github.io/{repo_name}/" 
+        # 3. Content Generation
+        generated_content = generate_content(request.brief)
 
-        # --- REVISE LOGIC (Round 2) ---
-        elif request.round == 2:
-            # A. Clone Existing Repo
-            github_url = f"https://{GITHUB_USERNAME}:{GITHUB_PAT}@github.com/{GITHUB_USERNAME}/{repo_name}.git"
-            run_git_command(f"git clone {github_url} {repo_path}", "/tmp")
-            
-            # B. LLM Revise App & Files
-            html_content, readme_content = generate_application(request.brief, request.checks, request.attachments, is_revision=True)
-            
-            # C. Overwrite/Modify Files
-            with open(os.path.join(repo_path, "index.html"), "w") as f:
-                f.write(html_content)
-            with open(os.path.join(repo_path, "README.md"), "w") as f:
-                f.write(readme_content)
-            
-            # D. Git Commit and Push
-            run_git_command(f"git add .", repo_path)
-            run_git_command(f'git commit -m "Revision for round {request.round}: {request.brief[:30]}..."', repo_path)
-            run_git_command(f"git push", repo_path)
-            
-            # E. Get Commit SHA and URLs
-            commit_sha = run_git_command("git rev-parse HEAD", repo_path)
-            repo_url = f"https://github.com/{GITHUB_USERNAME}/{repo_name}"
-            pages_url = f"https://{GITHUB_USERNAME}.github.io/{repo_name}/" 
-            
-        # --- 5. POST TO EVALUATION URL ---
+        # 4. GitHub Operations (Create Repo, Commit, Push, Enable Pages)
+        repo_details = create_github_repo(request, generated_content)
         
-        ping_data = EvaluationPing(
-            email=request.email,
-            task=request.task,
-            round=request.round,
-            nonce=request.nonce,
-            repo_url=repo_url,
-            commit_sha=commit_sha,
-            pages_url=pages_url,
-        )
+        # 5. POST to evaluation_url (Required by Project)
+        evaluation_payload = {
+            "email": request.email,
+            "task": request.task,
+            "round": request.round,
+            "nonce": request.nonce,
+            "repo_url": repo_details['repo_url'],
+            "commit_sha": repo_details['commit_sha'],
+            "pages_url": repo_details['pages_url']
+        }
+        
+        # --- TODO: IMPLEMENT EVALUATION POST ---
+        print(f"POSTing final details to evaluation URL: {request.evaluation_url}")
+        # Example using requests:
+        # response = requests.post(request.evaluation_url, json=evaluation_payload, headers={"Content-Type": "application/json"})
+        # response.raise_for_status() # Raise an exception for HTTP errors (4xx or 5xx)
+        # --- END TODO ---
+        
+        return {"status": "accepted", "message": f"Processing task {request.task} in background."}
 
-        # Implementation of exponential backoff loop for re-submission
-        delay = 1
-        max_retries = 5
-        for i in range(max_retries):
-            try:
-                response = requests.post(
-                    request.evaluation_url, 
-                    headers={"Content-Type": "application/json"},
-                    json=ping_data.dict(),
-                    timeout=5 
-                )
-                if response.status_code == 200:
-                    print(f"Successfully pinged evaluation API for round {request.round}.")
-                    break
-                else:
-                    print(f"Ping failed (Status: {response.status_code}). Retrying in {delay}s...")
-            except requests.exceptions.RequestException as e:
-                print(f"Ping failed (Exception: {e}). Retrying in {delay}s...")
-            
-            time.sleep(delay)
-            delay *= 2 
-        else:
-            print("Failed to notify evaluation API after multiple retries.")
-            
+    except ValueError as e:
+        # Catch errors from the GitHub function
+        print(f"CRITICAL: {e}")
+        # Send a 200 OK but with a message indicating failure
+        return {"status": "accepted", "message": f"Processing failed: {str(e)}"}
     except Exception as e:
-        print(f"An internal error occurred during build/deploy: {e}")
+        # Catch any other unexpected errors
+        print(f"CRITICAL: An unexpected error occurred: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error during processing.")
+   
+    
         
-    return {"status": "accepted", "message": f"Processing task {request.task} in background."}
