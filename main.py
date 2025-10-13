@@ -41,8 +41,7 @@ def run_git_command(command: List[str], cwd: str):
         result = subprocess.run(command, cwd=cwd, check=True, text=True, capture_output=True)
         return result
     except FileNotFoundError:
-        # If the command is not found (common on Windows without a proper PATH setup), 
-        # try running it through the system shell.
+        # If the command is not found, try running it through the system shell (especially on Windows).
         if sys.platform.startswith('win'):
             result = subprocess.run(command, cwd=cwd, check=True, text=True, capture_output=True, shell=True)
             return result
@@ -63,6 +62,7 @@ def cleanup_repo(repo_path: str):
 
 def generate_content(request: TaskRequest) -> dict:
     # --- TODO: IMPLEMENT LLM CALL and ATTACHMENT PARSING ---
+    # This must generate all necessary files: index.html, LICENSE, README.md, etc.
     print(f"Calling LLM to generate code for brief: {request.brief}")
     
     # Placeholder for generated files and required content
@@ -87,7 +87,7 @@ def create_github_repo(request: TaskRequest, generated_files: dict) -> dict:
     try:
         # --- TODO: IMPLEMENT FULL GITHUB FLOW ---
         
-        # 1. Create Repository (via GitHub API) and ensure it's public
+        # 1. Create Repository (via GitHub API)
         print(f"Attempting to create GitHub repo: {repo_name} for {GITHUB_USERNAME}")
         
         # 2. Clone the new repository 
@@ -95,7 +95,7 @@ def create_github_repo(request: TaskRequest, generated_files: dict) -> dict:
         
         run_git_command(["git", "clone", repo_ssh_url, repo_path], cwd=os.getcwd())
         
-        # 3. Create Files 
+        # [cite_start]3. Create Files (LICENSE and README.md are explicitly required [cite: 3, 2])
         os.makedirs(repo_path, exist_ok=True) 
         
         for filename, content in generated_files.items():
@@ -112,7 +112,7 @@ def create_github_repo(request: TaskRequest, generated_files: dict) -> dict:
         commit_sha_result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo_path, capture_output=True, text=True, check=True)
         commit_sha = commit_sha_result.stdout.strip()
 
-        # 5. Enable GitHub Pages 
+        # [cite_start]5. Enable GitHub Pages (Required [cite: 3])
         
         # 6. Construct final URLs 
         repo_url = f"https://github.com/{GITHUB_USERNAME}/{repo_name}" 
@@ -139,7 +139,12 @@ def create_github_repo(request: TaskRequest, generated_files: dict) -> dict:
     finally:
         cleanup_repo(repo_path)
 
-# --- Main API Endpoint ---
+# --- Main API Endpoints ---
+
+@app.get("/")
+def read_root():
+    """Provides a simple status check for the root URL."""
+    return {"status": "ok", "message": "API is running. POST to /api-endpoint for task processing."}
 
 @app.post("/api-endpoint")
 def handle_task_request(request: TaskRequest):
@@ -148,7 +153,7 @@ def handle_task_request(request: TaskRequest):
     if request.secret != STUDENT_SECRET:
         raise HTTPException(status_code=403, detail="Invalid student secret.")
     
-    # 2. Signature Verification
+    # [cite_start]2. Signature Verification (Required [cite: 1])
     ### TODO: IMPLEMENT SIGNATURE VERIFICATION HERE ###
     
     try:
@@ -158,7 +163,7 @@ def handle_task_request(request: TaskRequest):
         # 4. GitHub Operations 
         repo_details = create_github_repo(request, generated_files)
         
-        # 5. POST to evaluation_url
+        # [cite_start]5. POST to evaluation_url (Required [cite: 3])
         evaluation_payload = {
             "email": request.email,
             "task": request.task,
@@ -171,9 +176,10 @@ def handle_task_request(request: TaskRequest):
         
         # --- TODO: IMPLEMENT EVALUATION POST ---
         print(f"POSTing final details to evaluation URL: {request.evaluation_url}")
+        # [cite_start]Must ensure a HTTP 200 response[cite: 3].
         # --- END TODO ---
         
-        # 6. Final API Response
+        # [cite_start]6. Final API Response (Must include usercode [cite: 2])
         return {"status": "accepted", "message": f"Processing task {request.task} in background.", "usercode": repo_details['usercode']}
 
     except ValueError as e:
@@ -182,4 +188,6 @@ def handle_task_request(request: TaskRequest):
     except Exception as e:
         print(f"CRITICAL: An unexpected error occurred: {e}")
         raise HTTPException(status_code=500, detail="Internal server error during processing.")
-
+  
+        
+   
