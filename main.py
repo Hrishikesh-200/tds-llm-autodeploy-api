@@ -6,10 +6,12 @@ import requests
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
+from dotenv import load_dotenv
 import os.path
 import sys
 
 # --- Configuration & Secrets ---
+load_dotenv()  # Load from .env if present (for local testing)
 STUDENT_SECRET = os.environ.get("STUDENT_SECRET", "Hris@tds_proj1_term3")
 GITHUB_PAT = os.environ.get("GITHUB_PAT")
 GITHUB_USERNAME = "Hrishikesh-200" # Your GitHub username
