@@ -134,7 +134,7 @@ def process_task(request: IncomingTask):
 
     pat = GITHUB_PAT_PLACEHOLDER
     # Check if the PAT has been replaced
-    if pat == "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx":
+    if pat == "github_pat_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx":
         logger.critical("GITHUB_PAT_PLACEHOLDER is not set. Cannot run git commands.")
         return # Exit the background task
 
@@ -295,7 +295,7 @@ async def mock_eval_endpoint(payload: EvaluationPayload):
 async def startup_event():
     logger.info("Application starting up...")
     pat = GITHUB_PAT_PLACEHOLDER
-    if pat == "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx":
+    if pat == "github_pat_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx":
          logger.critical("!!! WARNING: GITHUB_PAT IS NOT SET. GIT COMMANDS WILL FAIL !!!")
     if GITHUB_USERNAME == "YourGitHubUsername":
          logger.critical("!!! WARNING: GITHUB_USERNAME IS NOT SET. REPO URLS WILL BE INCORRECT !!!")
