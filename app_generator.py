@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 import os
 import shutil
 import subprocess
@@ -25,12 +24,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 def run_git_command(command: List[str], path: str, pat: str) -> str:
     """Runs a Git command, capturing output and providing better error context."""
     logging.debug(f"Executing Git command in {path}: {' '.join(command)}")
-=======
-#app_generator.py
-def generate_application(brief, checks, attachments, is_revision=False):
-    """
-    This function contains the core logic to call your chosen LLM.
->>>>>>> 6fd7a63d88d24532ab83208d3d5c438aeb46b6af
     
     # Use PAT only if cloning/pushing via HTTPS requires it
     # Note: On some systems, PAT in the URL is handled by 'git clone'.
@@ -200,7 +193,6 @@ def process_task(task_params: Dict[str, Any], pat: str):
         return
 
 
-<<<<<<< HEAD
     # --- 4. Write Files (The Generalized I/O) ---
     try:
         # Clear existing files to ensure only new content is present (optional, but clean)
@@ -273,6 +265,3 @@ def process_task(task_params: Dict[str, Any], pat: str):
     notify_evaluator(task_params["evaluation_url"], success_payload)
     cleanup(local_repo_path)
     logging.info(f"Task {task_name}, Round {round_num} successfully processed and deployed.")
-=======
-    return html_content, readme_content, license_content
->>>>>>> 6fd7a63d88d24532ab83208d3d5c438aeb46b6af
