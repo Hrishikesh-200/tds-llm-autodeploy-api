@@ -127,7 +127,7 @@ def safe_rmtree(path: str, max_attempts=5, delay=0.5):
 
 def process_task(request: IncomingTask):
     """Handles the full task pipeline: generate, clone, write, commit, push, notify."""
-    from app_generator import call_llm_api, mock_signature_verification # Dynamic import
+    from app_generator import call_llm_api # Dynamic import
 
     logger.info(f"Starting task: {request.task}, Round: {request.round}")
     logger.info(f"Received Student Secret: {request.student_secret[:4]}...")
