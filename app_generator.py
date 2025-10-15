@@ -127,6 +127,10 @@ def process_task(task_params: Dict[str, Any], pat: str):
     # 0. Initial Setup & Validation
     task_name = task_params.get("task")
     round_num = task_params.get("round", 1)
+
+    local_repo_path = os.path.join(BASE_DIR, REPO_NAME) # Clone to a fixed path
+    
+    logging.info(f"Starting task: {task_name}, Round: {round_num}")
     
     # Path without protocol (e.g., github.com/user/repo)
     repo_url_host_path = f"github.com/{GITHUB_USERNAME}/{REPO_NAME}"
