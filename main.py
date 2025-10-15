@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel
 import os
 import threading
@@ -62,6 +62,17 @@ def api_endpoint(request: TaskRequest):
         "status": "accepted",
         "message": f"Task '{request.task}', Round {request.round} accepted and processing started in background."
     }
+
+# The new PLACEHOLDER route to handle the /eval 404 error
+@app.post("/eval")
+def handle_evaluation(response: Response):
+    """
+    Placeholder endpoint to prevent 404 errors when the application tries
+    to notify the evaluation URL during local testing.
+    """
+    response.status_code = status.HTTP_200_OK
+    return {"status": "ok", "message": "Evaluation notification received locally."}
+
 
 # Health check endpoint
 @app.get("/")
