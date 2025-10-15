@@ -1,113 +1,65 @@
 import logging
-import requests
-import json
-import os
-import time
 from typing import Dict, Any, List
 
-logger = logging.getLogger(__name__)
-
-# --- Configuration for LLM API ---
-# IMPORTANT: In a production environment, use environment variables for keys.
-# Since the environment variable system is not available here, we leave it blank 
-# as per instruction, relying on the runtime to provide it.
-API_KEY = "" 
-API_URL_BASE = "https://generativelanguage.googleapis.com/v1beta/models/"
-MODEL_NAME = "gemini-2.5-flash-preview-05-20"
-
+# WARNING: This entire file now contains MOCK logic to avoid external API calls (and billing issues).
+# This is for testing the deployment pipeline only.
 
 def call_llm_api(brief: str, attachments: List[Dict[str, str]], task_name: str) -> Dict[str, str]:
     """
-    Implements the real logic to call the Gemini API and generate structured code.
-    
-    Returns a dictionary containing required keys: 'filename', 'code_content', 
-    'readme_content', and 'license_content'.
+    MOCK function: Simulates the LLM's structured output.
+    It returns different code based on keywords in the brief to make testing realistic.
     """
-    logger.info(f"LLM: Calling model for brief: {brief[:50]}...")
+    logging.info(f"MOCK LLM: Simulating model response for brief: {brief[:80]}...")
     
-    # 1. Define the desired structured output (Schema)
-    response_schema = {
-        "type": "OBJECT",
-        "properties": {
-            "filename": {"type": "STRING", "description": "The primary file name (e.g., index.html)."},
-            "code_content": {"type": "STRING", "description": "The complete, self-contained code content for the primary file."},
-            "readme_content": {"type": "STRING", "description": "Markdown content for the README.md file."},
-            "license_content": {"type": "STRING", "description": "Content for a simple MIT License file."}
-        },
-        "required": ["filename", "code_content", "readme_content"]
+    brief_lower = brief.lower()
+    
+    # ⚠️ MOCK Logic 
+    if "image" in brief_lower or "picture" in brief_lower:
+        filename = "index.html"
+        code_content = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>LLM Generated Image Placeholder</title>
+</head>
+<body>
+    <div style="text-align: center; padding: 50px; border: 2px dashed #007BFF; margin: 20px;">
+        <h2>LLM Task: {task_name}</h2>
+        <p>Image generation simulated. This HTML file acts as the output placeholder.</p>
+        <p>Prompt: <strong>{brief}</strong></p>
+    </div>
+</body>
+</html>
+"""
+    elif "calculator" in brief_lower or "script" in brief_lower or "python" in brief_lower:
+        filename = "solution.py"
+        code_content = f"""
+# MOCK Python Solution for {task_name}
+# Task Brief: {brief}
+
+def solve_mock_problem(a: int, b: int) -> int:
+    # This simulates a computation that the LLM would write.
+    return a + b + 42 
+
+if __name__ == "__main__":
+    result = solve_mock_problem(10, 5)
+    print(f"Mock result: {{result}}")
+"""
+    else: # Default HTML file
+        filename = "index.html"
+        code_content = f"<html><body><h1>MOCK LLM Solution for: {task_name}</h1><p>Prompt: {brief}</p><p>Deployment successful!</p></body></html>"
+
+    # Common boilerplate files
+    readme_content = f"# Solution for {task_name}\n\n## Task Brief\n{brief}\n\n## Files\nPrimary file generated: {filename}\n\n**NOTE: This is a MOCK response to test the deployment pipeline.**"
+    license_content = "MIT License\n(MOCK Content)"
+    
+    # Return the structured dictionary that process_task expects
+    return {
+        "filename": filename,
+        "code_content": code_content,
+        "readme_content": readme_content,
+        "license_content": license_content
     }
 
-    # 2. Define the System Prompt
-    system_prompt = (
-        "You are a world-class code generation assistant. "
-        "Your task is to generate a single, complete web application (HTML, CSS, JS in one file) "
-        "or a Python script based on the user's request. "
-        "The output MUST strictly follow the provided JSON schema. "
-        "Ensure the generated code is fully functional and adheres to best practices. "
-        "Do not include any placeholders like '...' in the code_content."
-    )
-    
-    # 3. Construct the API Payload
-    user_parts = [{"text": brief}]
-    
-    # NOTE: Attachment handling logic for LLM vision/context would go here, 
-    # but for simplicity, we assume the model handles text prompts first.
-    
-    payload = {
-        "contents": [{"role": "user", "parts": user_parts}],
-        "systemInstruction": {"parts": [{"text": system_prompt}]},
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            "responseSchema": response_schema
-        },
-        # Assuming we don't need real-time search for code generation:
-        # "tools": [{"google_search": {}}] 
-    }
 
-    # 4. Execute the API Call with Exponential Backoff
-    url = f"{API_URL_BASE}{MODEL_NAME}:generateContent?key={API_KEY}"
-    max_retries = 5
-    delay = 1
-    
-    for i in range(max_retries):
-        try:
-            response = requests.post(url, headers={'Content-Type': 'application/json'}, data=json.dumps(payload), timeout=60)
-            response.raise_for_status()
-            
-            result = response.json()
-            candidate = result.get('candidates', [{}])[0]
-            
-            if candidate and candidate.get('content') and candidate['content'].get('parts'):
-                json_text = candidate['content']['parts'][0].get('text', '{}')
-                
-                # 5. Parse and Return the Structured Content
-                try:
-                    llm_data = json.loads(json_text)
-                    # Ensure all required keys are present before returning
-                    if all(key in llm_data for key in ["filename", "code_content", "readme_content"]):
-                        return llm_data
-                    else:
-                        raise ValueError("LLM returned incomplete JSON data.")
-
-                except json.JSONDecodeError:
-                    logger.error(f"Failed to decode JSON from LLM: {json_text}")
-                    raise Exception("LLM response was not valid JSON.")
-            
-            raise Exception("LLM returned empty or malformed response.")
-
-        except requests.exceptions.RequestException as e:
-            logger.error(f"API Request failed (Attempt {i+1}): {e}")
-            if i < max_retries - 1:
-                time.sleep(delay)
-                delay *= 2
-            else:
-                raise Exception(f"Failed to call Gemini API after {max_retries} retries.")
-        except Exception as e:
-            # Catch exceptions from parsing or incomplete data
-            raise e
-
-    # This line should ideally not be reached
-    raise Exception("An unexpected error occurred in LLM generation loop.")
-
-    
-    
