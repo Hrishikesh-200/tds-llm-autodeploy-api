@@ -128,12 +128,14 @@ def process_task(task_params: Dict[str, Any], pat: str):
     task_name = task_params.get("task")
     round_num = task_params.get("round", 1)
     
-    local_repo_path = os.path.join(BASE_DIR, REPO_NAME) # Clone to a fixed path
+    # Path without protocol (e.g., github.com/user/repo)
+    repo_url_host_path = f"github.com/{GITHUB_USERNAME}/{REPO_NAME}"
     
-    logging.info(f"Starting task: {task_name}, Round: {round_num}")
+    # The authenticated URL (FIXED: only one https://)
+    authenticated_repo_url = f"https://{pat}@{repo_url_host_path}.git" 
     
-    repo_url_base = f"{REPO_BASE_URL}{REPO_NAME}"
-    authenticated_repo_url = f"https://{pat}@{repo_url_base}.git"
+    # The non-authenticated public URL (used for links in payload)
+    repo_url_base = f"https://{repo_url_host_path}"
     
     # Define a default failure response structure
     failure_response = {
