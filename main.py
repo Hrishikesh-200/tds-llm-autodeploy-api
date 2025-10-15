@@ -254,8 +254,8 @@ def process_task(task_params: Dict[str, Any], pat: str):
 # --- FastAPI Application ---
 
 app = FastAPI(title="LLM Autodeploy Task Processor", version="1.0")
-# ⚠️ REMEMBER TO REPLACE THIS WITH YOUR ACTUAL PAT
-GITHUB_PAT_PLACEHOLDER = "YOUR_SECURE_GITHUB_PAT_HERE" 
+# GITHUB PAT: >>> IMPORTANT: REPLACE THE PLACEHOLDER BELOW WITH YOUR ACTUAL SECURE GITHUB PAT <<<
+GITHUB_PAT_PLACEHOLDER = "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" 
 
 @app.post("/api-endpoint", response_model=TaskResponse, status_code=202)
 async def api_endpoint(request: TaskRequest, background_tasks: BackgroundTasks):
@@ -265,7 +265,8 @@ async def api_endpoint(request: TaskRequest, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=401, detail="Invalid secret key provided.")
 
     pat = GITHUB_PAT_PLACEHOLDER
-    if pat == "YOUR_SECURE_GITHUB_PAT_HERE":
+    # Check if the PAT has been replaced
+    if pat == "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx":
         logger.critical("GITHUB_PAT_PLACEHOLDER is not set. Cannot run git commands.")
         raise HTTPException(status_code=500, detail="Server misconfigured: GITHUB_PAT not set.")
 
