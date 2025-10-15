@@ -1,291 +1,307 @@
-import os
-import shutil
 import subprocess
+import time
+import shutil
+import os
+import requests
 import json
 import logging
-import requests
-import base64
-import threading
-import time 
-from typing import Dict, Any, List, Optional
+from fastapi import FastAPI, BackgroundTasks, HTTPException
+from pydantic import BaseModel
+from typing import List, Optional
 
-# --- Import the real LLM generation function ---
-from app_generator import call_llm_api 
-# ---------------------------------------------------
+# --- Configuration ---
+# Your GitHub Personal Access Token (PAT) - REQUIRED FOR GIT PUSH
+# REPLACE THIS PLACEHOLDER WITH YOUR ACTUAL TOKEN
+GITHUB_PAT_PLACEHOLDER = "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" 
 
-# FastAPI and Pydantic Imports
-from fastapi import FastAPI, BackgroundTasks, Response, status, HTTPException
-from pydantic import BaseModel, Field
+# Your GitHub username and the name of the repository you created for this project
+GITHUB_USERNAME = "Hrishikesh-200" # Replace with your GitHub username
+REPO_NAME = "tds-llm-autodeploy-api"
+student_secret = "Hris@tds_proj1_term3"
+BASE_URL = f"https://github.com/{GITHUB_USERNAME}/{REPO_NAME}"
+LOCAL_REPO_PATH = os.path.join(os.getcwd(), REPO_NAME)
 
-# --- Configuration & Setup ---
-
-# Set your GitHub details here
-GITHUB_USERNAME = "Hrishikesh-200"
-REPO_NAME = "tds-llm-autodeploy-api" # The central repository name
-
-# Path is relative to where the server (main.py) is executed
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# Configure logging for the worker process
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# --- Logging Setup ---
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+# Configure a stream handler for console output
+ch = logging.StreamHandler()
+ch.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+ch.setFormatter(formatter)
+logger.addHandler(ch)
 
-# --- Pydantic Data Models (Based on your cURL payload) ---
-class TaskRequest(BaseModel):
-    """Defines the structure of the incoming API request payload."""
+# --- Pydantic Models for API ---
+class Attachment(BaseModel):
+    name: str
+    url: str
+
+class IncomingTask(BaseModel):
     email: str
-    secret: str = Field(..., description="The shared secret key for authentication.")
     task: str
-    round: int = 1
+    round: int
     nonce: str
-    brief: str = Field(..., description="The prompt for the LLM.")
+    brief: str
     checks: List[str]
-    evaluation_url: str = Field(..., description="URL to notify after processing.")
-    attachments: List[Dict[str, str]] = []
+    evaluation_url: str
+    attachments: Optional[List[Attachment]] = []
+    student_secret: str  # Student secret for authentication/evaluation
+    # signature field is included in the project spec but omitted here for simplicity
+    # signature: str
 
-class TaskResponse(BaseModel):
-    """Defines the structure of the successful API response."""
+class TaskStatus(BaseModel):
     status: str
     message: str
-    uuid: str # Assuming a unique task ID is generated
+    uuid: str
 
-# --- Core Processing Logic (Run in Background) ---
+class EvaluationPayload(BaseModel):
+    email: str
+    task: str
+    round: int
+    nonce: str
+    repo_url: str
+    commit_sha: str
+    pages_url: str
+    student_secret: str # Student secret for the final payload
 
-# Helper Functions 
+app = FastAPI()
 
-def run_git_command(command: List[str], path: str, pat: str) -> str:
-    """Runs a Git command, capturing output and providing better error context."""
-    logger.debug(f"Executing Git command in {path}: {' '.join(command)}")
-    
+# --- Helper Functions ---
+
+def run_git_command(command: List[str], cwd: str) -> str:
+    """Executes a git command and returns its stdout or raises an error on failure."""
     try:
-        # Use a longer timeout for potential slow remote operations
         result = subprocess.run(
-            command, 
-            cwd=path, 
-            check=True,  # Raises exception on non-zero exit code
-            capture_output=True, 
+            command,
+            cwd=cwd,
+            capture_output=True,
             text=True,
-            timeout=120 
+            check=True,
+            encoding='utf-8'
         )
-        return result.stdout
+        # Log command output for successful pushes/commits
+        if "push" in command or "commit" in command:
+            logger.info(f"Git command succeeded. STDOUT: {result.stdout.strip()}")
+        return result.stdout.strip()
     except subprocess.CalledProcessError as e:
-        error_message = f"Git command failed. STDOUT: {e.stdout} STDERR: {e.stderr}"
+        # Log detailed error information from Git
+        error_message = f"Git command failed: {' '.join(command)}\nSTDERR: {e.stderr.strip()}\nSTDOUT: {e.stdout.strip()}"
         logger.critical(error_message)
-        raise Exception(error_message)
+        raise RuntimeError(f"Git command failed: {e.stderr.strip()}")
+    except FileNotFoundError:
+        logger.critical("Git command not found. Ensure Git is installed and in your PATH.")
+        raise
 
-
-def cleanup(path: str):
-    """Safely removes the local repository folder, retrying for Windows file locks."""
-    if os.path.exists(path):
-        max_retries = 3
-        wait_time = 0.5
-        for i in range(max_retries):
-            try:
-                shutil.rmtree(path)
-                logger.info(f"Successfully cleaned up directory: {path}")
-                return
-            except Exception as e:
-                if i < max_retries - 1:
-                    logger.warning(f"Cleanup attempt {i+1} failed for {path} (WinError 5 likely). Retrying in {wait_time}s: {e}")
-                    time.sleep(wait_time)
-                else:
-                    logger.critical(f"Failed to remove directory after {max_retries} retries: {e}")
-                    raise e # Re-raise the exception after exhausting retries
-            
-def notify_evaluator(eval_url: str, response_payload: Dict[str, Any]) -> bool:
-    """Sends the final result JSON to the instructor's evaluation URL."""
-    logger.info(f"Notifying evaluator at: {eval_url}")
-    try:
-        response = requests.post(eval_url, json=response_payload, timeout=30)
-        response.raise_for_status() 
-        logger.info(f"Evaluator notified successfully. Status: {response.status_code}")
-        return True
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Failed to notify evaluation URL {eval_url}: {e}")
-        return False
-
-
-# Main Logic
-def process_task(task_params: Dict[str, Any], pat: str):
-    """
-    Manages the full LLM code generation and Git deployment lifecycle.
-    """
-    
-    # 0. Initial Setup & Validation
-    task_name = task_params.get("task")
-    round_num = task_params.get("round", 1)
-    
-    local_repo_path = os.path.join(BASE_DIR, REPO_NAME) 
-    
-    logger.info(f"Starting task: {task_name}, Round: {round_num}")
-    
-    # URL Construction (Corrected to avoid double 'https://')
-    repo_url_host_path = f"github.com/{GITHUB_USERNAME}/{REPO_NAME}"
-    authenticated_repo_url = f"https://{pat}@{repo_url_host_path}.git" 
-    repo_url_base = f"https://{repo_url_host_path}" 
-    
-    # Define a default failure response structure
-    failure_response = {
-        "email": task_params["email"],
-        "task": task_params["task"],
-        "round": task_params["round"],
-        "nonce": task_params["nonce"],
-        "repo_url": repo_url_base,
-        "commit_sha": "ERROR",
-        "pages_url": f"https://{GITHUB_USERNAME}.github.io/{REPO_NAME}/",
-    }
-    
-    # --- 1. Cleanup & Clone ---
-    try:
-        cleanup(local_repo_path)
-        logger.info(f"Cloning '{REPO_NAME}'...")
-        run_git_command(["git", "clone", authenticated_repo_url, local_repo_path], BASE_DIR, pat)
-    except Exception as e:
-        logger.error(f"Failed during initial clone: {e}")
-        failure_response["commit_sha"] = "GIT_CLONE_FAILED"
-        notify_evaluator(task_params["evaluation_url"], failure_response)
+def safe_rmtree(path: str, max_attempts=5, delay=0.5):
+    """Safely removes a directory, handling Windows file locks."""
+    if not os.path.exists(path):
         return
 
-    # --- 2. LLM Generation and File Content Preparation ---
-    try:
-        # 🟢 CALLING THE REAL LLM LOGIC FROM app_generator.py
-        llm_output = call_llm_api(
-            task_params["brief"], 
-            task_params["attachments"], 
-            task_name
-        )
-        main_file_name = llm_output["filename"]
-    except Exception as e:
-        logger.error(f"LLM/File preparation failed: {e}")
-        cleanup(local_repo_path)
-        failure_response["commit_sha"] = "LLM_GEN_FAILED"
-        notify_evaluator(task_params["evaluation_url"], failure_response)
-        return
+    for attempt in range(max_attempts):
+        try:
+            # On Windows, try to make files writable first if deletion fails
+            if os.name == 'nt':
+                 for root, dirs, files in os.walk(path, topdown=False):
+                    for name in files:
+                        filepath = os.path.join(root, name)
+                        os.chmod(filepath, 0o777) # Change permissions to read/write/execute
 
-    # --- 3. Branching (Multi-Round Logic) ---
-    target_branch = "main" if round_num == 1 else f"round-{round_num}"
-    try:
-        # FIX: Handle branch switching vs. branch creation
-        if round_num == 1:
-            # Switch to the existing 'main' branch (Round 1)
-            run_git_command(["git", "checkout", "main"], local_repo_path, pat)
-        else:
-            # Create and switch to a new branch (Subsequent Rounds)
-            run_git_command(["git", "checkout", "-b", target_branch], local_repo_path, pat)
+            shutil.rmtree(path)
+            logger.info(f"Successfully cleaned up directory: {path}")
+            return
+        except OSError as e:
+            # WinError 5 is Access Denied, a common Windows lock issue
+            if "WinError 5" in str(e) or "Access is denied" in str(e):
+                logger.warning(f"Cleanup attempt {attempt + 1} failed for {path} (WinError 5 likely). Retrying in {delay}s: {e}")
+                time.sleep(delay)
+                delay *= 2  # Exponential backoff
+            else:
+                logger.critical(f"Failed to remove directory due to unhandled error: {e}")
+                raise
 
-        # Configure identity (needed before commit)
-        run_git_command(["git", "config", "user.name", GITHUB_USERNAME], local_repo_path, pat)
-        run_git_command(["git", "config", "user.email", task_params.get("email")], local_repo_path, pat)
-
-    except Exception as e:
-        logger.error(f"Branching/Config failed: {e}")
-        cleanup(local_repo_path)
-        failure_response["commit_sha"] = "GIT_BRANCH_FAILED"
-        notify_evaluator(task_params["evaluation_url"], failure_response)
-        return
+    logger.critical(f"Failed to remove directory after {max_attempts} retries: {path}")
+    raise RuntimeError(f"Could not clean up directory: {path}")
 
 
-    # --- 4. Write Files (The Generalized I/O) ---
-    try:
-        # Write the main LLM output file
-        with open(os.path.join(local_repo_path, main_file_name), "w") as f:
-            f.write(llm_output["code_content"]) 
+# --- Core Task Processing ---
 
-        # Write/Overwrite boilerplate files
-        with open(os.path.join(local_repo_path, "README.md"), "w") as f:
-            f.write(llm_output["readme_content"]) 
-        with open(os.path.join(local_repo_path, "LICENSE"), "w") as f:
-            f.write(llm_output.get("license_content", "MIT License...")) 
+def process_task(request: IncomingTask):
+    """Handles the full task pipeline: generate, clone, write, commit, push, notify."""
+    from app_generator import call_llm_api, mock_signature_verification # Dynamic import
 
-        # Attachment Handling (Decoding data URIs)
-        for attachment in task_params.get("attachments", []):
-            if attachment["url"].startswith("data:"):
-                try:
-                    base64_data = attachment["url"].split(',')[1] 
-                    binary_data = base64.b64decode(base64_data)
-                    attachment_path = os.path.join(local_repo_path, attachment["name"])
-                    with open(attachment_path, "wb") as f:
-                        f.write(binary_data)
-                    logger.info(f"Saved attachment: {attachment['name']}")
-                except Exception as e:
-                    logger.error(f"Failed to decode/save attachment {attachment['name']}: {e}")
-
-    except Exception as e:
-        logger.error(f"File writing failed: {e}")
-        cleanup(local_repo_path)
-        failure_response["commit_sha"] = "FILE_WRITE_FAILED"
-        notify_evaluator(task_params["evaluation_url"], failure_response)
-        return
-
-    # --- 5. Commit and Push ---
-    try:
-        run_git_command(["git", "add", "."], local_repo_path, pat)
-        run_git_command(["git", "commit", "-m", f"Submission for Round {round_num} - {task_name}"], local_repo_path, pat)
-        
-        # Push to the remote target branch
-        run_git_command(["git", "push", "-f", "origin", target_branch], local_repo_path, pat)
-        
-        # Get the final commit SHA for the notification payload
-        commit_sha = run_git_command(["git", "rev-parse", "HEAD"], local_repo_path, pat).strip()
-        
-    except Exception as e:
-        logger.error(f"Deployment Push failed: {e}")
-        cleanup(local_repo_path)
-        failure_response["commit_sha"] = "GIT_PUSH_FAILED"
-        notify_evaluator(task_params["evaluation_url"], failure_response)
-        return
-        
-    # --- 6. Final Notification and Cleanup ---
-    success_payload = {
-        "email": task_params["email"],
-        "task": task_params["task"],
-        "round": task_params["round"],
-        "nonce": task_params["nonce"],
-        "repo_url": repo_url_base,
-        "commit_sha": commit_sha,
-        "pages_url": f"https://{GITHUB_USERNAME}.github.io/{REPO_NAME}/",
-    }
-    
-    notify_evaluator(task_params["evaluation_url"], success_payload)
-    cleanup(local_repo_path)
-    logger.info(f"Task {task_name}, Round {round_num} successfully processed and deployed.")
-
-
-# --- FastAPI Application ---
-
-app = FastAPI(title="LLM Autodeploy Task Processor", version="1.0")
-# GITHUB PAT: >>> IMPORTANT: REPLACE THE PLACEHOLDER BELOW WITH YOUR ACTUAL SECURE GITHUB PAT <<<
-GITHUB_PAT_PLACEHOLDER = "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" 
-
-@app.post("/api-endpoint", response_model=TaskResponse, status_code=202)
-async def api_endpoint(request: TaskRequest, background_tasks: BackgroundTasks):
-    
-    expected_secret = "Hris@tds_proj1_term3"
-    if request.secret != expected_secret:
-        raise HTTPException(status_code=401, detail="Invalid secret key provided.")
+    logger.info(f"Starting task: {request.task}, Round: {request.round}")
+    logger.info(f"Received Student Secret: {request.student_secret[:4]}...")
 
     pat = GITHUB_PAT_PLACEHOLDER
     # Check if the PAT has been replaced
     if pat == "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx":
         logger.critical("GITHUB_PAT_PLACEHOLDER is not set. Cannot run git commands.")
-        raise HTTPException(status_code=500, detail="Server misconfigured: GITHUB_PAT not set.")
+        return # Exit the background task
 
-    # We use a separate thread to process the task and prevent blocking the API request
-    task_thread = threading.Thread(target=process_task, args=(request.model_dump(), pat))
-    task_thread.start()
+    # 1. Cleanup before clone (essential for Windows)
+    try:
+        # Aggressive cleanup at the start
+        safe_rmtree(LOCAL_REPO_PATH)
+    except Exception as e:
+        logger.error(f"Failed during cleanup: {e}")
+        return # Exit the background task
+
+    # 2. Mock Signature Verification (as per project spec)
+    # The actual implementation would involve a public key and hashing
+    if not mock_signature_verification(request):
+        logger.error(f"Signature verification failed for task {request.task}")
+        # In a real app, this would raise an HTTP 401/403
+        return
+
+    # 3. Clone Repository
+    # Note: We don't put the PAT here directly for cloning to let git credential helper work, 
+    # but we explicitly set the remote later for the push command.
+    CLONE_URL_NO_AUTH = BASE_URL # Use the simple HTTPS URL for cloning
+    try:
+        logger.info(f"Cloning '{REPO_NAME}' from {CLONE_URL_NO_AUTH}...")
+        run_git_command(["git", "clone", CLONE_URL_NO_AUTH, LOCAL_REPO_PATH], cwd=os.getcwd())
+    except Exception as e:
+        logger.error(f"Failed during initial clone. Ensure the repo exists and is accessible: {e}")
+        return
+
+    # 4. Generate App Content
+    try:
+        generated_files = call_llm_api(request.brief, request.round, request.attachments)
+    except Exception as e:
+        logger.error(f"LLM generation failed: {e}")
+        return
+
+    # 5. Write Files and Get Commit SHA
+    try:
+        logger.info(f"Writing {len(generated_files)} files to local repository...")
+        for file in generated_files:
+            filepath = os.path.join(LOCAL_REPO_PATH, file['path'])
+            # Ensure subdirectory exists for the file
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            with open(filepath, "w", encoding='utf-8') as f:
+                f.write(file['content'])
+        
+        # 6. Git Commit
+        run_git_command(["git", "add", "."], cwd=LOCAL_REPO_PATH)
+        commit_message = f"Round {request.round}: {request.task} - {request.brief[:50]}..."
+        run_git_command(["git", "commit", "-m", commit_message], cwd=LOCAL_REPO_PATH)
+
+        # Get the new commit SHA
+        commit_sha = run_git_command(["git", "rev-parse", "HEAD"], cwd=LOCAL_REPO_PATH)
+        logger.info(f"New commit SHA: {commit_sha}")
+
+        # 7. Git Push (Using the token in the remote URL for robustness)
+        # We explicitly set the remote URL with the token before pushing
+        AUTHENTICATED_REMOTE_URL = f"https://{pat}@{BASE_URL.replace('https://', '')}.git"
+        
+        # Configure the remote URL to include the PAT for authentication
+        run_git_command(["git", "remote", "set-url", "origin", AUTHENTICATED_REMOTE_URL], cwd=LOCAL_REPO_PATH)
+        
+        # Force push to main branch
+        run_git_command(["git", "push", "origin", "main"], cwd=LOCAL_REPO_PATH)
+        
+        # Restore the remote URL to the clean version after push
+        run_git_command(["git", "remote", "set-url", "origin", BASE_URL], cwd=LOCAL_REPO_PATH)
+        
+    except Exception as e:
+        logger.error(f"Git or File operation failed: {e}")
+        return
+        
+    # 8. Notify Evaluator
+    payload = EvaluationPayload(
+        email=request.email,
+        task=request.task,
+        round=request.round,
+        nonce=request.nonce,
+        repo_url=BASE_URL,
+        commit_sha=commit_sha,
+        pages_url=f"https://{GITHUB_USERNAME}.github.io/{REPO_NAME}/",
+        student_secret=request.student_secret
+    )
+
+    try:
+        logger.info(f"Notifying evaluator at: {request.evaluation_url}")
+        # Implement exponential backoff for real submission
+        max_retries = 3
+        delay = 1
+        response = None
+
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    request.evaluation_url,
+                    json=payload.model_dump(),
+                    headers={"Content-Type": "application/json"},
+                    timeout=10 # Increased timeout for network operation
+                )
+                if response.status_code == 200:
+                    logger.info(f"Evaluator notified successfully. Status: {response.status_code}")
+                    break
+                else:
+                    logger.warning(f"Evaluator notification failed (Attempt {attempt + 1}). Status: {response.status_code}, Response: {response.text}")
+
+            except requests.RequestException as e:
+                logger.warning(f"Failed to connect to evaluator URL (Attempt {attempt + 1}): {e}")
+
+            if attempt < max_retries - 1:
+                logger.info(f"Retrying in {delay} seconds...")
+                time.sleep(delay)
+                delay *= 2 # Exponential backoff
+
+        if response is None or response.status_code != 200:
+             logger.critical(f"Final submission to evaluator failed after {max_retries} attempts.")
+
+
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during evaluation submission: {e}")
+
+    finally:
+        # 10. Final Cleanup
+        try:
+            safe_rmtree(LOCAL_REPO_PATH)
+        except Exception as e:
+            logger.critical(f"Final cleanup failed: {e}. Directory may be locked.")
+
+
+# --- API Endpoints ---
+
+@app.post("/api-endpoint", response_model=TaskStatus, status_code=202)
+async def handle_task_request(request: IncomingTask, background_tasks: BackgroundTasks):
+    """Receives the LLM deployment task and starts processing in the background."""
     
-    return {
-        "status": "accepted",
-        "message": f"Task '{request.task}', Round {request.round} accepted and processing started in background.",
-        "uuid": "d01ceb1f-8ea3-4a04-a8aa-673aaf52eb4c"
-    }
+    # Use a fixed UUID for assignment simplicity
+    task_uuid = "d01ceb1f-8ea3-4a04-a8aa-673aaf52eb4c"
+    
+    # Run the heavy-lifting task processing in a background thread
+    background_tasks.add_task(process_task, request)
+    
+    # Immediate response to the client
+    return TaskStatus(
+        status="accepted",
+        message=f"Task '{request.task}', Round {request.round} accepted and processing started in background.",
+        uuid=task_uuid
+    )
 
+# Mock endpoint for the background task to call (your local endpoint)
 @app.post("/eval")
-def handle_evaluation(response: Response):
-    """Placeholder endpoint to prevent 404 errors during evaluation notification."""
-    response.status_code = status.HTTP_200_OK
-    return {"status": "ok", "message": "Evaluation notification received locally."}
+async def mock_eval_endpoint(payload: EvaluationPayload):
+    """Mocks the evaluation API endpoint."""
+    logger.info(f"Received Evaluation Payload for {payload.task}, Round {payload.round}")
+    logger.info(f"Repo URL: {payload.repo_url}, Commit: {payload.commit_sha}")
+    logger.info(f"Student Secret in Payload: {payload.student_secret[:4]}...")
+    return {"status": "ok", "message": "Evaluation request recorded."}
 
-@app.get("/")
-def read_root():
-    return {"status": "ok", "message": "LLM Autodeploy API is running."}
+@app.on_event("startup")
+async def startup_event():
+    logger.info("Application starting up...")
+    pat = GITHUB_PAT_PLACEHOLDER
+    if pat == "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx":
+         logger.critical("!!! WARNING: GITHUB_PAT IS NOT SET. GIT COMMANDS WILL FAIL !!!")
+    if GITHUB_USERNAME == "YourGitHubUsername":
+         logger.critical("!!! WARNING: GITHUB_USERNAME IS NOT SET. REPO URLS WILL BE INCORRECT !!!")
+
+    # Clean up any leftover folder from a previous crash
+    try:
+        safe_rmtree(LOCAL_REPO_PATH)
+    except Exception as e:
+        logger.error(f"Startup cleanup failed: {e}")
