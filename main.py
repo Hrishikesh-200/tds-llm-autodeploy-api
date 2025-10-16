@@ -247,14 +247,15 @@ def process_task(request: IncomingTask):
         # --- Git Push (Authenticated) ---
         # Format the remote URL with the PAT for authentication
         pat = os.getenv('GITHUB_PAT') # Reload PAT for safety, although loaded at start
-        if not pat:
-             raise Exception("GITHUB_PAT is missing from environment variables.")
-             
-        AUTHENTICATED_REMOTE_URL = f"https://{pat}@{BASE_URL.replace('https://', '').replace('.git', '')}.git"
-        
+        if not PAT:
+             # This check ensures that the PAT is available, either from .env or the fallback.
+            raise Exception("GITHUB_PAT is missing from environment variables.")
+            
+        AUTHENTICATED_REMOTE_URL = f"https://{PAT}@{BASE_URL.replace('https://', '').replace('.git', '')}.git"
+            
         # Set the remote URL to use the PAT for this push
         run_git_command(["git", "remote", "set-url", "origin", AUTHENTICATED_REMOTE_URL], cwd=LOCAL_REPO_PATH)
-        
+            
         # Push the changes
         if not run_git_command(["git", "push", "origin", "main"], cwd=LOCAL_REPO_PATH):
             raise Exception("Git push failed.")
